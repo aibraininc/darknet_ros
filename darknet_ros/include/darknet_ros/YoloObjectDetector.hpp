@@ -24,7 +24,12 @@
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/Image.h>
 #include <geometry_msgs/Point.h>
+
 #include <image_transport/image_transport.h>
+#include <image_transport/subscriber_filter.h>
+#include <message_filters/subscriber.h>
+#include <message_filters/time_synchronizer.h>
+#include <message_filters/sync_policies/approximate_time.h>
 
 // OpenCv
 #include <opencv2/imgproc/imgproc.hpp>
@@ -107,6 +112,11 @@ class YoloObjectDetector
    */
   void cameraCallback(const sensor_msgs::ImageConstPtr& msg);
 
+
+  void imageCb(const sensor_msgs::ImageConstPtr& rgb_msg,
+                const sensor_msgs::ImageConstPtr& depth_msg,
+                const sensor_msgs::CameraInfoConstPtr& depth_camerainfo);
+
   /*!
    * Check for objects action goal callback.
    */
@@ -145,6 +155,20 @@ class YoloObjectDetector
 
   //! Advertise and subscribe to image topics.
   image_transport::ImageTransport imageTransport_;
+
+
+  // Subscriptions
+  /////////////////////////////////////////////////////////
+  std::shared_ptr<image_transport::ImageTransport> rgb_it_;
+  std::shared_ptr<image_transport::ImageTransport> depth_it_;
+  image_transport::SubscriberFilter sub_depth_;
+  image_transport::SubscriberFilter sub_rgb_;
+  message_filters::Subscriber<sensor_msgs::CameraInfo> sub_info_;
+
+  typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::CameraInfo> SyncPolicy;
+  typedef message_filters::Synchronizer<SyncPolicy> Synchronizer;
+  std::shared_ptr<Synchronizer> sync_;
+
 
   //! ROS subscriber and publisher.
   image_transport::Subscriber imageSubscriber_;
@@ -203,6 +227,7 @@ class YoloObjectDetector
 
   std_msgs::Header imageHeader_;
   cv::Mat camImageCopy_;
+  cv::Mat depthImageCopy_;
   boost::shared_mutex mutexImageCallback_;
 
   bool imageStatus_ = false;
@@ -246,6 +271,8 @@ class YoloObjectDetector
   bool isNodeRunning(void);
 
   void *publishInThread();
+
+  float depthAverage(cv::Mat depth, int xmin, int ymin, int xmax, int ymax);
 };
 
 } /* namespace darknet_ros*/

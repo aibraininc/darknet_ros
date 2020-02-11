@@ -8,6 +8,7 @@
 
 // yolo object detector
 #include "darknet_ros/YoloObjectDetector.hpp"
+#include <math.h>       /* isnan, sqrt */
 
 // Check for xServer
 #include <X11/Xlib.h>
@@ -155,8 +156,29 @@ void YoloObjectDetector::init()
   nodeHandle_.param("publishers/detection_image/queue_size", detectionImageQueueSize, 1);
   nodeHandle_.param("publishers/detection_image/latch", detectionImageLatch, true);
 
-  imageSubscriber_ = imageTransport_.subscribe(cameraTopicName, cameraQueueSize,
-                                               &YoloObjectDetector::cameraCallback, this);
+
+  /// Subscribing
+  rgb_it_.reset( new image_transport::ImageTransport(nodeHandle_) );
+  depth_it_.reset( new image_transport::ImageTransport(nodeHandle_) );
+
+  // parameter for depth_image_transport hint
+  std::string depth_image_transport_param = "depth_image_transport";
+
+  // depth image can use different transport.(e.g. compressedDepth)
+  image_transport::TransportHints depth_hints("raw",ros::TransportHints(), nodeHandle_, depth_image_transport_param);
+  sub_depth_.subscribe(*depth_it_, "/camera/aligned_depth_to_color/image_raw", 1, depth_hints);
+
+  // rgb uses normal ros transport hints.
+  image_transport::TransportHints hints("raw", ros::TransportHints(), nodeHandle_);
+  sub_rgb_.subscribe(*rgb_it_, cameraTopicName, cameraQueueSize);
+  sub_info_.subscribe(nodeHandle_, "/camera/color/camera_info", 1);
+
+  sync_.reset( new Synchronizer(SyncPolicy(5), sub_rgb_, sub_depth_, sub_info_) );
+  sync_->registerCallback(bind(&YoloObjectDetector::imageCb, this, _1, _2, _3));
+
+
+  // imageSubscriber_ = imageTransport_.subscribe(cameraTopicName, cameraQueueSize,
+  //                                              &YoloObjectDetector::cameraCallback, this);
   objectPublisher_ = nodeHandle_.advertise<darknet_ros_msgs::ObjectCount>(objectDetectorTopicName,
                                                                             objectDetectorQueueSize,
                                                                             objectDetectorLatch);
@@ -178,6 +200,47 @@ void YoloObjectDetector::init()
       boost::bind(&YoloObjectDetector::checkForObjectsActionPreemptCB, this));
   checkForObjectsActionServer_->start();
 }
+
+void YoloObjectDetector::imageCb(const sensor_msgs::ImageConstPtr& rgb_msg, const sensor_msgs::ImageConstPtr& depth_msg, const sensor_msgs::CameraInfoConstPtr& camerainfo)
+{
+  ROS_DEBUG("[YoloObjectDetector] USB image received.");
+
+  cv_bridge::CvImagePtr cam_image;
+  cv_bridge::CvImagePtr depth_image;
+
+  try {
+    cam_image = cv_bridge::toCvCopy(rgb_msg, sensor_msgs::image_encodings::BGR8);
+  } catch (cv_bridge::Exception& e) {
+    ROS_ERROR("cv_bridge exception: %s", e.what());
+    return;
+  }
+
+  try {
+    depth_image = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_32FC1);
+  } catch (cv_bridge::Exception& e) {
+    ROS_ERROR("cv_bridge exception: %s", e.what());
+    return;
+  }
+
+
+
+  if (cam_image) {
+    {
+      boost::unique_lock<boost::shared_mutex> lockImageCallback(mutexImageCallback_);
+      imageHeader_ = rgb_msg->header;
+      camImageCopy_ = cam_image->image.clone();
+      depthImageCopy_ = depth_image->image.clone();
+    }
+    {
+      boost::unique_lock<boost::shared_mutex> lockImageStatus(mutexImageStatus_);
+      imageStatus_ = true;
+    }
+    frameWidth_ = cam_image->image.size().width;
+    frameHeight_ = cam_image->image.size().height;
+  }
+  return;
+}
+
 
 void YoloObjectDetector::cameraCallback(const sensor_msgs::ImageConstPtr& msg)
 {
@@ -579,6 +642,28 @@ bool YoloObjectDetector::isNodeRunning(void)
   return isNodeRunning_;
 }
 
+float YoloObjectDetector::depthAverage(cv::Mat depthImg, int xmin, int ymin, int xmax, int ymax)
+{
+  float depth_average = 0;
+  int cnt = 0;
+  for(size_t i = xmin; i < xmax; i++)
+  {
+    for(size_t j = ymin; j < ymax; j++)
+    {
+      float depth = depthImg.at<float>((ymin+ymax)/2, (xmin+xmax)/2) / 1000.0;
+      if(depth > 0 && std::isnan(depth) == false) {
+        cnt ++;
+        depth_average += depth;
+      }
+    }
+  }
+  if(cnt > 0)
+    depth_average = depth_average / float(cnt);
+  else if(std::isnan(depth_average))
+    depth_average = 0;
+  return depth_average;
+}
+
 void *YoloObjectDetector::publishInThread()
 {
   // Publish image.
@@ -614,6 +699,8 @@ void *YoloObjectDetector::publishInThread()
           int ymin = (rosBoxes_[i][j].y - rosBoxes_[i][j].h / 2) * frameHeight_;
           int xmax = (rosBoxes_[i][j].x + rosBoxes_[i][j].w / 2) * frameWidth_;
           int ymax = (rosBoxes_[i][j].y + rosBoxes_[i][j].h / 2) * frameHeight_;
+          // float depth = depthImageCopy_.at<float>((ymin+ymax)/2, (xmin+xmax)/2);
+          float depth = depthAverage(depthImageCopy_, xmin,ymin, xmax,ymax);
 
           boundingBox.Class = classLabels_[i];
           boundingBox.id = i;
@@ -622,6 +709,7 @@ void *YoloObjectDetector::publishInThread()
           boundingBox.ymin = ymin;
           boundingBox.xmax = xmax;
           boundingBox.ymax = ymax;
+          boundingBox.depth = depth;
           boundingBoxesResults_.bounding_boxes.push_back(boundingBox);
         }
       }
