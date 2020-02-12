@@ -130,6 +130,10 @@ void YoloObjectDetector::init()
   // Initialize publisher and subscriber.
   std::string cameraTopicName;
   int cameraQueueSize;
+  std::string depthTopicName;
+  int depthQueueSize;
+  std::string cameraInfoTopicName;
+
   std::string objectDetectorTopicName;
   int objectDetectorQueueSize;
   bool objectDetectorLatch;
@@ -139,6 +143,11 @@ void YoloObjectDetector::init()
   std::string detectionImageTopicName;
   int detectionImageQueueSize;
   bool detectionImageLatch;
+
+  nodeHandle_.param("subscribers/depth_reading/topic", depthTopicName,
+                    std::string("/camera/image_raw"));
+  nodeHandle_.param("subscribers/depth_reading/queue_size", depthQueueSize, 1);
+  nodeHandle_.param("subscribers/camera_info_reading/topic", cameraInfoTopicName, std::string("/camera/color/camera_info"));
 
   nodeHandle_.param("subscribers/camera_reading/topic", cameraTopicName,
                     std::string("/camera/image_raw"));
@@ -166,12 +175,12 @@ void YoloObjectDetector::init()
 
   // depth image can use different transport.(e.g. compressedDepth)
   image_transport::TransportHints depth_hints("raw",ros::TransportHints(), nodeHandle_, depth_image_transport_param);
-  sub_depth_.subscribe(*depth_it_, "/camera/aligned_depth_to_color/image_raw", 1, depth_hints);
+  sub_depth_.subscribe(*depth_it_, depthTopicName, depthQueueSize, depth_hints);
 
   // rgb uses normal ros transport hints.
   image_transport::TransportHints hints("raw", ros::TransportHints(), nodeHandle_);
   sub_rgb_.subscribe(*rgb_it_, cameraTopicName, cameraQueueSize);
-  sub_info_.subscribe(nodeHandle_, "/camera/color/camera_info", 1);
+  sub_info_.subscribe(nodeHandle_, cameraInfoTopicName, cameraQueueSize);
 
   sync_.reset( new Synchronizer(SyncPolicy(5), sub_rgb_, sub_depth_, sub_info_) );
   sync_->registerCallback(bind(&YoloObjectDetector::imageCb, this, _1, _2, _3));

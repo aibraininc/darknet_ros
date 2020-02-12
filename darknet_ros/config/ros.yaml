@@ -4,6 +4,14 @@ subscribers:
     topic: /camera/color/image_raw
     queue_size: 1
 
+  depth_reading:
+    topic: /camera/aligned_depth_to_color/image_raw
+    queue_size: 1
+
+  camera_info_reading:
+    topic: /camera/color/camera_info
+    
+
 actions:
 
   camera_reading:
